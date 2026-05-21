@@ -11,7 +11,10 @@ from langchain_text_splitters import CharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
+
+# =========================================================
 # LOAD ENV VARIABLES
+# =========================================================
 
 load_dotenv(override=True)
 
@@ -25,18 +28,38 @@ if groq_api_key:
 else:
     print("No API Key found")
 
+
+# =========================================================
 # EMBEDDING MODEL
+# =========================================================
 
 embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
+
+# =========================================================
 # LOAD BOOK DATASET
+# =========================================================
 
 books = pd.read_csv("books_with_emotions.csv")
 
-# HANDLE THUMBNAILS
 
+# =========================================================
+# CLEAN CATEGORY COLUMN
+# =========================================================
+
+books["simple_categories"] = (
+    books["simple_categories"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+)
+
+
+# =========================================================
+# HANDLE THUMBNAILS
+# =========================================================
 
 books["thumbnail"] = books["thumbnail"].fillna("")
 
@@ -45,14 +68,21 @@ books["large_thumbnail"] = np.where(
     books["thumbnail"] + "&fife=w800",
     "cover-not-found.png"
 )
+
+
+# =========================================================
 # LOAD DOCUMENTS
+# =========================================================
 
 raw_documents = TextLoader(
     "tagged_description.txt",
     encoding="utf-8"
 ).load()
 
+
+# =========================================================
 # SPLIT DOCUMENTS
+# =========================================================
 
 text_splitter = CharacterTextSplitter(
     separator="\n",
@@ -62,30 +92,20 @@ text_splitter = CharacterTextSplitter(
 
 documents = text_splitter.split_documents(raw_documents)
 
-# #* BEFORE importing Chroma: Because Hugging Face Spaces often breaks with sqlite version issues.
-# __import__("pysqlite3")
-# import sys
-# sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 
-# ! Run this before loading the vector database. This will create a local cipy then after you run the app.py it will load them fast.
- # Create and save vector database locally
-
-# db_books = Chroma.from_documents(
-#     documents,
-#     embedding=embedding_model,
-#     persist_directory="chroma_db"
-# )
-
-# ! This is the code for the production i am deploying it that is why writing it if on localhost then run the above one.
-# Load existing vector database
-
+# =========================================================
+# LOAD EXISTING VECTOR DATABASE
+# =========================================================
 
 db_books = Chroma(
     persist_directory="chroma_db",
     embedding_function=embedding_model
 )
 
+
+# =========================================================
 # RETRIEVE SEMANTIC RECOMMENDATIONS
+# =========================================================
 
 def retrieve_semantic_recommendations(
     query: str,
@@ -100,22 +120,68 @@ def retrieve_semantic_recommendations(
         k=initial_top_k
     )
 
-    books_list = [
-        int(rec.page_content.strip('"').split()[0])
-        for rec in recs
-    ]
+    books_list = []
 
-    book_recs = books[
-        books["isbn13"].isin(books_list)
-    ]
+    for rec in recs:
+
+        try:
+
+            isbn = int(
+                rec.page_content
+                .strip('"')
+                .split()[0]
+            )
+
+            books_list.append(isbn)
+
+        except:
+
+            continue
+
+    # =====================================================
+    # PRESERVE VECTOR SEARCH ORDER
+    # =====================================================
+    seen = set()
+
+    valid_isbns = []
+
+    for isbn in books_list:
+
+     if (
+        isbn in books["isbn13"].values
+        and isbn not in seen
+    ):
+
+        valid_isbns.append(isbn)
+
+        seen.add(isbn)
+
+    if len(valid_isbns) == 0:
+        return pd.DataFrame()
+
+    book_recs = (
+        books
+        .set_index("isbn13")
+        .loc[valid_isbns]
+        .reset_index()
+    )
+
+    # =====================================================
     # CATEGORY FILTER
+    # =====================================================
 
     if category != "All":
 
         book_recs = book_recs[
-            book_recs["simple_categories"] == category
+            book_recs["simple_categories"]
+            .str.lower()
+            ==
+            category.strip().lower()
         ]
+
+    # =====================================================
     # EMOTIONAL TONE FILTER
+    # =====================================================
 
     if tone == "Happy":
 
@@ -154,7 +220,10 @@ def retrieve_semantic_recommendations(
 
     return book_recs.head(final_top_k)
 
+
+# =========================================================
 # GENERATE HTML BOOK CARDS
+# =========================================================
 
 def recommend_books(
     query: str,
@@ -168,6 +237,23 @@ def recommend_books(
         tone=tone
     )
 
+    # =====================================================
+    # HANDLE EMPTY RESULTS
+    # =====================================================
+
+    if recommendations.empty:
+
+        return """
+        <div style="
+            text-align:center;
+            padding:50px;
+            color:white;
+            font-size:24px;
+        ">
+            😔 No books found for this combination.
+        </div>
+        """
+
     html = """
     <div style="
         display:grid;
@@ -180,16 +266,22 @@ def recommend_books(
     for _, row in recommendations.iterrows():
 
         title = str(row["title"])
+
         authors = str(row["authors"])
+
         description = str(row["description"])
-        
+
+        # =================================================
         # SHORT DESCRIPTION
+        # =================================================
 
         short_description = (
             " ".join(description.split()[:35]) + "..."
         )
 
+        # =================================================
         # FORMAT AUTHORS
+        # =================================================
 
         authors_split = authors.split(";")
 
@@ -211,7 +303,9 @@ def recommend_books(
 
             authors_str = authors
 
+        # =================================================
         # LINKS
+        # =================================================
 
         google_books_link = (
             f"https://books.google.com/books?vid=ISBN"
@@ -223,7 +317,9 @@ def recommend_books(
             f"{title.replace(' ', '+')}"
         )
 
+        # =================================================
         # CARD HTML
+        # =================================================
 
         html += f"""
         <div style="
@@ -321,13 +417,20 @@ def recommend_books(
 
     return html
 
-# DROPDOWNS
 
-categories = ["All"] + sorted(
-    books["simple_categories"]
-    .dropna()
-    .unique()
-    .tolist()
+# =========================================================
+# DROPDOWNS
+# =========================================================
+
+categories = (
+    ["All"] +
+    sorted(
+        books["simple_categories"]
+        .dropna()
+        .str.strip()
+        .unique()
+        .tolist()
+    )
 )
 
 tones = [
@@ -339,7 +442,11 @@ tones = [
     "Sad"
 ]
 
+
+# =========================================================
 # GRADIO DASHBOARD
+# =========================================================
+
 with gr.Blocks(
     theme=gr.themes.Soft(),
     css="""
@@ -399,7 +506,15 @@ with gr.Blocks(
         ],
         outputs=output
     )
+
+
+# =========================================================
 # RUN APP
+# =========================================================
 
 if __name__ == "__main__":
-    dashboard.launch(server_name="0.0.0.0", server_port=7860)
+
+    dashboard.launch(
+        server_name="0.0.0.0",
+        server_port=7860
+    )
