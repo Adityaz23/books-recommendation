@@ -1,7 +1,7 @@
+gradio
 pandas
 numpy
 torch
-gradio
 python-dotenv
 langchain
 langchain-community
@@ -10,4 +10,4 @@ langchain-chroma
 langchain-huggingface
 sentence-transformers
 chromadb
-pysqlite3-binary
+transformers
