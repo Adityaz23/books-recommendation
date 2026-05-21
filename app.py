@@ -62,10 +62,10 @@ text_splitter = CharacterTextSplitter(
 
 documents = text_splitter.split_documents(raw_documents)
 
-#* BEFORE importing Chroma: Because Hugging Face Spaces often breaks with sqlite version issues.
-__import__("pysqlite3")
-import sys
-sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+# #* BEFORE importing Chroma: Because Hugging Face Spaces often breaks with sqlite version issues.
+# __import__("pysqlite3")
+# import sys
+# sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 
 # ! Run this before loading the vector database. This will create a local cipy then after you run the app.py it will load them fast.
  # Create and save vector database locally
