@@ -62,6 +62,11 @@ text_splitter = CharacterTextSplitter(
 
 documents = text_splitter.split_documents(raw_documents)
 
+#* BEFORE importing Chroma: Because Hugging Face Spaces often breaks with sqlite version issues.
+__import__("pysqlite3")
+import sys
+sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+
 # ! Run this before loading the vector database. This will create a local cipy then after you run the app.py it will load them fast.
  # Create and save vector database locally
 
@@ -73,6 +78,7 @@ documents = text_splitter.split_documents(raw_documents)
 
 # ! This is the code for the production i am deploying it that is why writing it if on localhost then run the above one.
 # Load existing vector database
+
 
 db_books = Chroma(
     persist_directory="chroma_db",
