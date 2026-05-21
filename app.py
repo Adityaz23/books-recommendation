@@ -336,7 +336,11 @@ tones = [
 # GRADIO DASHBOARD
 with gr.Blocks(
     theme=gr.themes.Soft(),
-    title="Semantic Book Recommender"
+    css="""
+    footer {
+        visibility: hidden;
+    }
+    """
 ) as dashboard:
 
     gr.Markdown(
