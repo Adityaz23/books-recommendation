@@ -1,10 +1,7 @@
+import os
 import pandas as pd
 import numpy as np
-import torch
-import os
 import gradio as gr
-
-from dotenv import load_dotenv
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import CharacterTextSplitter
@@ -13,20 +10,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 
 # =========================================================
-# LOAD ENV VARIABLES
+# BASE DIRECTORY — works both locally and on HuggingFace
 # =========================================================
 
-load_dotenv(override=True)
-
-groq_api_key = os.getenv("GROQ_API_KEY")
-
-if groq_api_key:
-    print(
-        f"Groq API key loaded successfully "
-        f"and starts with {groq_api_key[:5]}"
-    )
-else:
-    print("No API Key found")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # =========================================================
@@ -42,7 +29,7 @@ embedding_model = HuggingFaceEmbeddings(
 # LOAD BOOK DATASET
 # =========================================================
 
-books = pd.read_csv("books_with_emotions.csv")
+books = pd.read_csv(os.path.join(BASE_DIR, "books_with_emotions.csv"))
 
 
 # =========================================================
@@ -71,34 +58,22 @@ books["large_thumbnail"] = np.where(
 
 
 # =========================================================
-# LOAD DOCUMENTS
-# =========================================================
-
-raw_documents = TextLoader(
-    "tagged_description.txt",
-    encoding="utf-8"
-).load()
-
-
-# =========================================================
-# SPLIT DOCUMENTS
-# =========================================================
-
-text_splitter = CharacterTextSplitter(
-    separator="\n",
-    chunk_size=1000,
-    chunk_overlap=0
-)
-
-documents = text_splitter.split_documents(raw_documents)
-
-
-# =========================================================
 # LOAD EXISTING VECTOR DATABASE
+# NOTE: ChromaDB files must be inside a "chroma_db" folder
+#       at the root of your HuggingFace Space repo.
+#       Required files inside chroma_db/:
+#         - chroma.sqlite3
+#         - data_level0.bin
+#         - header.bin
+#         - length.bin
+#         - link_lists.bin
+#         - index_metadata.pickle
 # =========================================================
+
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
 
 db_books = Chroma(
-    persist_directory="chroma_db",
+    persist_directory=CHROMA_PATH,
     embedding_function=embedding_model
 )
 
@@ -115,46 +90,25 @@ def retrieve_semantic_recommendations(
     final_top_k: int = 16
 ) -> pd.DataFrame:
 
-    recs = db_books.similarity_search(
-        query,
-        k=initial_top_k
-    )
+    recs = db_books.similarity_search(query, k=initial_top_k)
 
     books_list = []
 
     for rec in recs:
-
         try:
-
-            isbn = int(
-                rec.page_content
-                .strip('"')
-                .split()[0]
-            )
-
+            isbn = int(rec.page_content.strip('"').split()[0])
             books_list.append(isbn)
-
-        except:
-
+        except Exception:
             continue
 
-    # =====================================================
-    # PRESERVE VECTOR SEARCH ORDER
-    # =====================================================
+    # Preserve vector search order and deduplicate
     seen = set()
-
     valid_isbns = []
 
     for isbn in books_list:
-
-     if (
-        isbn in books["isbn13"].values
-        and isbn not in seen
-    ):
-
-        valid_isbns.append(isbn)
-
-        seen.add(isbn)
+        if isbn in books["isbn13"].values and isbn not in seen:
+            valid_isbns.append(isbn)
+            seen.add(isbn)
 
     if len(valid_isbns) == 0:
         return pd.DataFrame()
@@ -166,56 +120,25 @@ def retrieve_semantic_recommendations(
         .reset_index()
     )
 
-    # =====================================================
-    # CATEGORY FILTER
-    # =====================================================
-
+    # Category filter
     if category != "All":
-
         book_recs = book_recs[
-            book_recs["simple_categories"]
-            .str.lower()
-            ==
-            category.strip().lower()
+            book_recs["simple_categories"].str.lower()
+            == category.strip().lower()
         ]
 
-    # =====================================================
-    # EMOTIONAL TONE FILTER
-    # =====================================================
+    # Emotional tone filter
+    tone_map = {
+        "Happy": "joy",
+        "Surprising": "surprise",
+        "Angry": "anger",
+        "Suspenseful": "fear",
+        "Sad": "sadness",
+    }
 
-    if tone == "Happy":
-
+    if tone in tone_map:
         book_recs = book_recs.sort_values(
-            by="joy",
-            ascending=False
-        )
-
-    elif tone == "Surprising":
-
-        book_recs = book_recs.sort_values(
-            by="surprise",
-            ascending=False
-        )
-
-    elif tone == "Angry":
-
-        book_recs = book_recs.sort_values(
-            by="anger",
-            ascending=False
-        )
-
-    elif tone == "Suspenseful":
-
-        book_recs = book_recs.sort_values(
-            by="fear",
-            ascending=False
-        )
-
-    elif tone == "Sad":
-
-        book_recs = book_recs.sort_values(
-            by="sadness",
-            ascending=False
+            by=tone_map[tone], ascending=False
         )
 
     return book_recs.head(final_top_k)
@@ -225,11 +148,14 @@ def retrieve_semantic_recommendations(
 # GENERATE HTML BOOK CARDS
 # =========================================================
 
-def recommend_books(
-    query: str,
-    category: str,
-    tone: str
-):
+def recommend_books(query: str, category: str, tone: str):
+
+    if not query.strip():
+        return """
+        <div style="text-align:center; padding:50px; color:white; font-size:20px;">
+            💡 Please enter a book description to get started.
+        </div>
+        """
 
     recommendations = retrieve_semantic_recommendations(
         query=query,
@@ -237,19 +163,9 @@ def recommend_books(
         tone=tone
     )
 
-    # =====================================================
-    # HANDLE EMPTY RESULTS
-    # =====================================================
-
     if recommendations.empty:
-
         return """
-        <div style="
-            text-align:center;
-            padding:50px;
-            color:white;
-            font-size:24px;
-        ">
+        <div style="text-align:center; padding:50px; color:white; font-size:24px;">
             😔 No books found for this combination.
         </div>
         """
@@ -257,7 +173,7 @@ def recommend_books(
     html = """
     <div style="
         display:grid;
-        grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+        grid-template-columns:repeat(auto-fill, minmax(250px, 1fr));
         gap:25px;
         padding:20px;
     ">
@@ -266,60 +182,28 @@ def recommend_books(
     for _, row in recommendations.iterrows():
 
         title = str(row["title"])
-
         authors = str(row["authors"])
-
         description = str(row["description"])
 
-        # =================================================
-        # SHORT DESCRIPTION
-        # =================================================
-
-        short_description = (
-            " ".join(description.split()[:35]) + "..."
-        )
-
-        # =================================================
-        # FORMAT AUTHORS
-        # =================================================
+        short_description = " ".join(description.split()[:35]) + "..."
 
         authors_split = authors.split(";")
 
         if len(authors_split) == 2:
-
-            authors_str = (
-                f"{authors_split[0]} and "
-                f"{authors_split[1]}"
-            )
-
+            authors_str = f"{authors_split[0]} and {authors_split[1]}"
         elif len(authors_split) > 2:
-
             authors_str = (
-                f"{', '.join(authors_split[:-1])} "
-                f"and {authors_split[-1]}"
+                f"{', '.join(authors_split[:-1])} and {authors_split[-1]}"
             )
-
         else:
-
             authors_str = authors
 
-        # =================================================
-        # LINKS
-        # =================================================
-
         google_books_link = (
-            f"https://books.google.com/books?vid=ISBN"
-            f"{row['isbn13']}"
+            f"https://books.google.com/books?vid=ISBN{row['isbn13']}"
         )
-
         amazon_link = (
-            "https://www.amazon.com/s?k="
-            f"{title.replace(' ', '+')}"
+            f"https://www.amazon.com/s?k={title.replace(' ', '+')}"
         )
-
-        # =================================================
-        # CARD HTML
-        # =================================================
 
         html += f"""
         <div style="
@@ -330,50 +214,22 @@ def recommend_books(
             transition:0.3s;
             border:1px solid #374151;
         ">
-
             <img
                 src="{row['large_thumbnail']}"
-                style="
-                    width:100%;
-                    height:380px;
-                    object-fit:cover;
-                "
+                onerror="this.src='cover-not-found.png'"
+                style="width:100%; height:380px; object-fit:cover;"
             >
-
             <div style="padding:18px;">
-
-                <h3 style="
-                    color:white;
-                    margin-bottom:10px;
-                    font-size:20px;
-                    line-height:1.3;
-                ">
+                <h3 style="color:white; margin-bottom:10px; font-size:20px; line-height:1.3;">
                     {title}
                 </h3>
-
-                <p style="
-                    color:#9CA3AF;
-                    font-size:14px;
-                    margin-bottom:12px;
-                ">
+                <p style="color:#9CA3AF; font-size:14px; margin-bottom:12px;">
                     by {authors_str}
                 </p>
-
-                <p style="
-                    color:#D1D5DB;
-                    font-size:14px;
-                    line-height:1.6;
-                    margin-bottom:20px;
-                ">
+                <p style="color:#D1D5DB; font-size:14px; line-height:1.6; margin-bottom:20px;">
                     {short_description}
                 </p>
-
-                <div style="
-                    display:flex;
-                    gap:10px;
-                    flex-wrap:wrap;
-                ">
-
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
                     <a
                         href="{google_books_link}"
                         target="_blank"
@@ -389,7 +245,6 @@ def recommend_books(
                     >
                         📖 Read Preview
                     </a>
-
                     <a
                         href="{amazon_link}"
                         target="_blank"
@@ -405,16 +260,12 @@ def recommend_books(
                     >
                         🛒 Buy Book
                     </a>
-
                 </div>
-
             </div>
-
         </div>
         """
 
     html += "</div>"
-
     return html
 
 
@@ -422,25 +273,15 @@ def recommend_books(
 # DROPDOWNS
 # =========================================================
 
-categories = (
-    ["All"] +
-    sorted(
-        books["simple_categories"]
-        .dropna()
-        .str.strip()
-        .unique()
-        .tolist()
-    )
+categories = ["All"] + sorted(
+    books["simple_categories"]
+    .dropna()
+    .str.strip()
+    .unique()
+    .tolist()
 )
 
-tones = [
-    "All",
-    "Happy",
-    "Surprising",
-    "Angry",
-    "Suspenseful",
-    "Sad"
-]
+tones = ["All", "Happy", "Surprising", "Angry", "Suspenseful", "Sad"]
 
 
 # =========================================================
@@ -449,40 +290,28 @@ tones = [
 
 with gr.Blocks(
     theme=gr.themes.Soft(),
-    css="""
-    footer {
-        visibility: hidden;
-    }
-    """
+    css="footer { visibility: hidden; }"
 ) as dashboard:
 
     gr.Markdown(
         """
         # 📚 Semantic Book Recommender
-        
-        Discover books using AI-powered semantic search,
-        emotional tones, and category filtering.
+        Discover books using AI-powered semantic search, emotional tones, and category filtering.
         """
     )
 
     with gr.Row():
-
         user_query = gr.Textbox(
             label="Enter Book Description",
-            placeholder=(
-                "e.g., A dark fantasy story "
-                "with dragons and magic..."
-            ),
+            placeholder="e.g., A dark fantasy story with dragons and magic...",
             scale=3
         )
-
         category_dropdown = gr.Dropdown(
             choices=categories,
             label="Select Category",
             value="All",
             scale=1
         )
-
         tone_dropdown = gr.Dropdown(
             choices=tones,
             label="Select Emotional Tone",
@@ -490,20 +319,12 @@ with gr.Blocks(
             scale=1
         )
 
-    submit_button = gr.Button(
-        "🔍 Find Recommendations",
-        variant="primary"
-    )
-
+    submit_button = gr.Button("🔍 Find Recommendations", variant="primary")
     output = gr.HTML()
 
     submit_button.click(
         fn=recommend_books,
-        inputs=[
-            user_query,
-            category_dropdown,
-            tone_dropdown
-        ],
+        inputs=[user_query, category_dropdown, tone_dropdown],
         outputs=output
     )
 
@@ -513,8 +334,4 @@ with gr.Blocks(
 # =========================================================
 
 if __name__ == "__main__":
-
-    dashboard.launch(
-        server_name="0.0.0.0",
-        server_port=7860
-    )
+    dashboard.launch(server_name="0.0.0.0", server_port=7860)
